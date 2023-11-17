@@ -1,19 +1,30 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.core.bean.copier.CopyOptions;
+import cn.hutool.core.lang.UUID;
 import cn.hutool.core.util.RandomUtil;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.dto.LoginFormDTO;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.UserMapper;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.RegexUtils;
 import com.hmdp.utils.SystemConstants;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import javax.servlet.http.HttpSession;
 
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import static com.hmdp.utils.RedisConstants.*;
 import static com.hmdp.utils.SystemConstants.*;
 
 /**
@@ -27,6 +38,8 @@ import static com.hmdp.utils.SystemConstants.*;
 @Slf4j
 @Service
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IUserService {
+    @Resource
+    private StringRedisTemplate stringRedisTemplate;
 
     @Override
     public Result sendCode(String phoneNum, HttpSession session) {
@@ -35,7 +48,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
             return Result.fail("Phone number is wrong.");
         }
         String code = RandomUtil.randomNumbers(6);
-        session.setAttribute(SESSION_CODE_NAME, code);
+        stringRedisTemplate.opsForValue().set(LOGIN_CODE_KEY + phoneNum, code, LOGIN_CODE_TTL, TimeUnit.MINUTES);
         log.debug("Code has been send: {}", code);
         return Result.ok();
     }
@@ -46,17 +59,27 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         if (RegexUtils.isPhoneInvalid(phone)) {
             return Result.fail("Phone number format is wrong.");
         }
-        Object codeSession = session.getAttribute(SESSION_CODE_NAME);
+        String cacheCode = stringRedisTemplate.opsForValue().get(LOGIN_CODE_KEY + phone);
         String codeGet = loginForm.getCode();
-        if (codeSession == null || !(codeSession.toString().equals(codeGet))) {
+        if (cacheCode == null || !(cacheCode.equals(codeGet))) {
             return Result.fail("Code is wrong.");
         }
         User user = query().eq(SQL_USER_PHONE_NAME, phone).one();
         if (user == null) {
-            creatUser(phone);
+            user = creatUser(phone);
         }
-        session.setAttribute(SESSION_USER_NAME, user);
-        return Result.ok();
+        // Save user to Redis
+        String UUIDStr = UUID.randomUUID().toString(true);
+        UserDTO userDTO = BeanUtil.copyProperties(user, UserDTO.class);
+        Map<String, Object> map = BeanUtil.beanToMap(userDTO, new HashMap<>(),
+                CopyOptions.create()
+                        .setIgnoreNullValue(true)
+                        .setFieldValueEditor((filedName, fieldValue) -> fieldValue.toString()));
+        String userToken = LOGIN_USER_KEY + UUIDStr;
+        stringRedisTemplate.opsForHash().putAll(userToken, map);
+        stringRedisTemplate.expire(userToken, LOGIN_USER_TTL, TimeUnit.SECONDS);
+
+        return Result.ok(UUIDStr);
     }
 
     private User creatUser(String phone) {
