@@ -19,34 +19,12 @@ import static com.hmdp.utils.SystemConstants.SESSION_USER_NAME;
 
 public class LoginInterceptor implements HandlerInterceptor {
 
-    private StringRedisTemplate stringRedisTemplate;
-
-    public LoginInterceptor(StringRedisTemplate stringRedisTemplate) {
-        this.stringRedisTemplate = stringRedisTemplate;
-    }
-
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
-        String token = request.getHeader("authorization");
-        if (token == null) {
+        if (UserHolder.getUser() == null) {
             response.setStatus(401);
             return false;
         }
-        String userToken = LOGIN_USER_KEY + token;
-        Map<Object, Object> userMap = stringRedisTemplate.opsForHash().entries(userToken);
-        if (userMap.isEmpty()) {
-            response.setStatus(401);
-            return false;
-        }
-        UserDTO userDTO = BeanUtil.fillBeanWithMap(userMap, new UserDTO(), false);
-        UserHolder.saveUser(userDTO);
-        // Refresh
-        stringRedisTemplate.expire(userToken, LOGIN_USER_TTL, TimeUnit.SECONDS);
         return true;
-    }
-
-    @Override
-    public void afterCompletion(HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) throws Exception {
-        UserHolder.removeUser();
     }
 }
